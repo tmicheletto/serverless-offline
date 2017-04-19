@@ -10,17 +10,25 @@ module.exports = function createLambdaProxyContext(request, options, stageVariab
   const authPrincipalId = request.auth && request.auth.credentials && request.auth.credentials.user;
   const authContext = (request.auth && request.auth.credentials && request.auth.credentials.context) || {};
 
-  var body = request.payload && JSON.stringify(request.payload);
-  var headers = utils.capitalizeKeys(request.headers);
+  let body = request.payload;
+  // Used for Content-Length calculation
+  const headers = utils.capitalizeKeys(request.headers);
 
   if (body) {
+    if(typeof body !== 'string') {
+      body = JSON.stringify(body);
+    }
     headers['Content-Length'] = Buffer.byteLength(body);
-    headers['Content-Type'] = 'application/json';
+
+    // Set a default Content-Type if not provided.
+    if (!headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
   }
 
   return {
+    headers,
     path: request.path,
-    headers: headers,
     pathParameters: utils.nullIfEmpty(request.params),
     requestContext: {
       accountId: 'offlineContext_accountId',
@@ -43,6 +51,8 @@ module.exports = function createLambdaProxyContext(request, options, stageVariab
       authorizer: Object.assign(authContext, { // 'principalId' should have higher priority
         principalId: authPrincipalId || process.env.PRINCIPAL_ID || 'offlineContext_authorizer_principalId', // See #24
       }),
+      resourcePath: request.route.path,
+      httpMethod: request.method.toUpperCase(),
     },
     resource: request.route.path,
     httpMethod: request.method.toUpperCase(),

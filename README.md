@@ -1,27 +1,29 @@
 # Serverless Offline Plugin
 [![serverless](http://public.serverless.com/badges/v3.svg)](http://www.serverless.com)
 [![npm version](https://badge.fury.io/js/serverless-offline.svg)](https://badge.fury.io/js/serverless-offline)
+[![Build Status](https://travis-ci.org/dherault/serverless-offline.svg?branch=master)](https://travis-ci.org/dherault/serverless-offline)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 This [Serverless](https://github.com/serverless/serverless) plugin emulates AWS λ and API Gateway on your local machine to speed up your development cycles.
-To do so, it starts an HTTP server that handles the request's lifecycle like API does and invokes your handlers.
+To do so, it starts an HTTP server that handles the request's lifecycle like APIG does and invokes your handlers.
 
 **Features:**
 - Nodejs λ only.
 - Velocity templates support.
 - Lazy loading of your files with require cache invalidation: no need for a reloading tool like Nodemon.
-- And more: integrations, authorizers, timeouts, responseParameters, HTTPS, Babel runtime, CORS, CoffeeScript, etc...
+- And more: integrations, authorizers, timeouts, responseParameters, HTTPS, Babel runtime, CORS, etc...
 
 ## Documentation
 
 - [Installation](https://github.com/dherault/serverless-offline#installation)
 - [Usage and command line options](https://github.com/dherault/serverless-offline#usage-and-command-line-options)
 - [Usage with Babel](https://github.com/dherault/serverless-offline#usage-with-babel)
-- [Usage with CoffeeScript](https://github.com/dherault/serverless-offline#usage-with-coffeescript)
 - [Token Authorizers](https://github.com/dherault/serverless-offline#token-authorizers)
 - [Custom authorizers](https://github.com/dherault/serverless-offline#custom-authorizers)
 - [AWS API Gateway Features](https://github.com/dherault/serverless-offline#aws-api-gateway-features)
 - [Velocity nuances](https://github.com/dherault/serverless-offline#velocity-nuances)
 - [Debug process](https://github.com/dherault/serverless-offline#debug-process)
+- [Scoped execution](https://github.com/dherault/serverless-offline#scoped-execution)
 - [Simulation quality](https://github.com/dherault/serverless-offline#simulation-quality)
 - [Credits and inspiration](https://github.com/dherault/serverless-offline#credits-and-inspiration)
 - [Contributing](https://github.com/dherault/serverless-offline#contributing)
@@ -53,7 +55,7 @@ the console should display *Offline* as one of the plugins now available in your
 
 In your project root run:
 
-`serverless offline` or `sls offline`.
+`serverless offline start` or `sls offline start`.
 
 to list all the options for the plugin run:
 
@@ -69,13 +71,26 @@ All CLI options are optional:
 --stage                 -s  The stage used to populate your templates. Default: the first stage found in your project.
 --region                -r  The region used to populate your templates. Default: the first region for the first stage found.
 --noTimeout             -t  Disables the timeout feature.
+--noEnvironment             Turns of loading of your environment variables from serverless.yml. Allows the usage of tools such as PM2 or docker-compose.
 --dontPrintOutput           Turns of logging of your lambda outputs in the terminal.
 --httpsProtocol         -H  To enable HTTPS, specify directory (relative to your cwd, typically your project dir) for both cert.pem and key.pem files.
 --skipCacheInvalidation -c  Tells the plugin to skip require cache invalidation. A script reloading tool like Nodemon might then be needed.
 --corsAllowOrigin           Used as default Access-Control-Allow-Origin header value for responses. Delimit multiple values with commas. Default: '*'
 --corsAllowHeaders          Used as default Access-Control-Allow-Headers header value for responses. Delimit multiple values with commas. Default: 'accept,content-type,x-api-key'
 --corsDisallowCredentials   When provided, the default Access-Control-Allow-Credentials header value will be passed as 'false'. Default: true
+--exec "<script>"           When provided, a shell script is executed when the server starts up, and the server will shut domn after handling this command.
 ```
+
+Any of the CLI options can be added to your `serverless.yml`. For example:
+
+```
+custom:
+  serverless-offline:
+    httpsProtocol: "dev-certs"
+    port: 4000
+```
+
+Options passed on the command line override YAML options.
 
 By default you can send your requests to `http://localhost:3000/`. Please note that:
 
@@ -104,15 +119,11 @@ custom:
 Here is the full list of [babel-register options](https://babeljs.io/docs/usage/require/)
 
 
-## Usage with CoffeeScript
-
-You can have `handler.coffee` instead of `handler.js`. No additional configuration is needed.
-
 ## Token Authorizers
 
 As defined in the [Serverless Documentation](https://serverless.com/framework/docs/providers/aws/events/apigateway/#setting-api-keys-for-your-rest-api) you can use API Keys as a simple authentication method.
 
-Serverless-offline will emulate the behaviour of APIG and create a random token for each key defined and print it on screen. With these tokens you can access your private methods adding `x-api-key: generatedToken` to your request header. To specify a custom token use the `--apiKey` cli option.
+Serverless-offline will emulate the behaviour of APIG and create a random token that's printed on the screen. With this token you can access your private methods adding `x-api-key: generatedToken` to your request header. All api keys will share the same token. To specify a custom token use the `--apiKey` cli option.
 
 ## Custom authorizers
 
@@ -251,11 +262,17 @@ The system will start in wait status. This will also automatically start the chr
 
 Depending on the breakpoint, you may need to call the URL path for your function in seperate browser window for your serverless function to be run and made available for debugging.
 
+## Scoped execution
+
+Serverless offline plugin can invoke shell scripts when a simulated server has been started up for the purposes of integration testing. Downstream plugins may tie into the
+"before:offline:start:end" hook to release resources when the server is shutting down.
+
+`> sls offline start --exec "./startIntegrationTests.sh"`
 
 ## Simulation quality
 
 This plugin simulates API Gateway for many practical purposes, good enough for development - but is not a perfect simulator.
-Specifically, Lambda currently runs on Node v4.3.2, whereas *Offline* runs on your own runtime where no memory limits are enforced.
+Specifically, Lambda currently runs on Node v4.3.2 and v6.10.0, whereas *Offline* runs on your own runtime where no memory limits are enforced.
 
 
 ## Credits and inspiration

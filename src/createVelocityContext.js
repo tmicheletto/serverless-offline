@@ -12,6 +12,7 @@ function escapeJavaScript(x) {
     for (let key in x) { // eslint-disable-line prefer-const
       result[key] = jsEscapeString(x[key]);
     }
+
     return JSON.stringify(result); // Is this really how APIG does it?
   }
   else if (typeof x.toString === 'function') return escapeJavaScript(x.toString());

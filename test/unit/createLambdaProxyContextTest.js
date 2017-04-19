@@ -1,3 +1,5 @@
+/* global describe before context it */
+
 'use strict';
 
 const chai = require('chai');
@@ -10,7 +12,7 @@ chai.use(dirtyChai);
 
 describe('createLambdaProxyContext', () => {
 
-  const expectFixedAttributes = (lambdaProxyContext) => {
+  const expectFixedAttributes = lambdaProxyContext => {
     const requestContext = lambdaProxyContext.requestContext;
     expect(requestContext.accountId).to.eq('offlineContext_accountId');
     expect(requestContext.resourceId).to.eq('offlineContext_resourceId');

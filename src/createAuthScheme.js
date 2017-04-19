@@ -9,7 +9,7 @@ const debugLog = require('./debugLog');
 module.exports = function createAuthScheme(authFun, authorizerOptions, funName, endpointPath, options, serverlessLog, servicePath) {
   const authFunName = authorizerOptions.name;
 
-  const identitySourceMatch = /^method.request.header.(\w+)$/.exec(authorizerOptions.identitySource);
+  const identitySourceMatch = /^method.request.header.((?:\w+-?)+\w+)$/.exec(authorizerOptions.identitySource);
   if (!identitySourceMatch || identitySourceMatch.length !== 2) {
     throw new Error(`Serverless Offline only supports retrieving tokens from the headers (λ: ${authFunName})`);
   }
@@ -36,7 +36,7 @@ module.exports = function createAuthScheme(authFun, authorizerOptions, funName, 
       const event = {
         type: 'TOKEN',
         authorizationToken: authorization,
-        methodArn: `arn:aws:execute-api:${options.region}:<Account id>:<API id>/${options.stage}/${request.method.toUpperCase()}/${endpointPath}`,
+        methodArn: `arn:aws:execute-api:${options.region}:random-account-id:random-api-id/${options.stage}/${request.method.toUpperCase()}/${endpointPath}`,
       };
 
       // Create the Authorization function handler
@@ -44,15 +44,17 @@ module.exports = function createAuthScheme(authFun, authorizerOptions, funName, 
 
       try {
         handler = functionHelper.createHandler(funOptions, options);
-      } catch (err) {
+      }
+      catch (err) {
         return reply(Boom.badImplementation(null, `Error while loading ${authFunName}`));
       }
 
       // Creat the Lambda Context for the Auth function
       const lambdaContext = createLambdaContext(authFun, (err, result) => {
         // Return an unauthorized response
-        const onError = (error) => {
+        const onError = error => {
           serverlessLog(`Authorization function returned an error response: (λ: ${authFunName})`, error);
+
           return reply(Boom.unauthorized('Unauthorized'));
         };
 
@@ -60,14 +62,21 @@ module.exports = function createAuthScheme(authFun, authorizerOptions, funName, 
           return onError(err);
         }
 
-        const onSuccess = (policy) => {
+        const onSuccess = policy => {
         // Validate that the policy document has the principalId set
           if (!policy.principalId) {
             serverlessLog(`Authorization response did not include a principalId: (λ: ${authFunName})`, err);
+
             return reply(Boom.forbidden('No principalId set on the Response'));
           }
 
           serverlessLog(`Authorization function returned a successful response: (λ: ${authFunName})`, policy);
+
+          if (policy.policyDocument.Statement[0].Effect === 'Deny') {
+            serverlessLog(`Authorization response didn't authorize user to access resource: (λ: ${authFunName})`, err);
+
+            return reply(Boom.forbidden('User is not authorized to access this resource'));
+          }
 
           // Set the credentials for the rest of the pipeline
           return reply.continue({ credentials: { user: policy.principalId, context: policy.context } });
@@ -76,9 +85,11 @@ module.exports = function createAuthScheme(authFun, authorizerOptions, funName, 
         if (result && typeof result.then === 'function' && typeof result.catch === 'function') {
           debugLog('Auth function returned a promise');
           result.then(onSuccess).catch(onError);
-        } else if (result instanceof Error) {
+        }
+        else if (result instanceof Error) {
           onError(result);
-        } else {
+        }
+        else {
           onSuccess(result);
         }
       });

@@ -1,17 +1,16 @@
 'use strict';
 
-// One-line coffee-script support
-require('coffee-script/register');
-
 // Node dependencies
 const fs = require('fs');
 const path = require('path');
+const exec = require('child_process').exec;
 
 // External dependencies
 const Hapi = require('hapi');
 const corsHeaders = require('hapi-cors-headers');
 const _ = require('lodash');
 const crypto = require('crypto');
+
 // Internal lib
 require('./javaHelper');
 const debugLog = require('./debugLog');
@@ -34,6 +33,7 @@ class Offline {
     this.service = serverless.service;
     this.serverlessLog = serverless.cli.log.bind(serverless.cli);
     this.options = options;
+    this.exitCode = 0;
     this.provider = 'aws';
     this.start = this.start.bind(this);
 
@@ -47,6 +47,7 @@ class Offline {
             usage: 'Simulates API Gateway to call your lambda functions offline using backward compatible initialization.',
             lifecycleEvents: [
               'init',
+              'end',
             ],
           },
         },
@@ -87,6 +88,9 @@ class Offline {
             usage: 'Disable the timeout feature.',
             shortcut: 't',
           },
+          noEnvironment: {
+            usage: 'Turns of loading of your environment variables from serverless.yml. Allows the usage of tools such as PM2 or docker-compose.',
+          },
           dontPrintOutput: {
             usage: 'Turns of logging of your lambda outputs in the terminal.',
           },
@@ -102,13 +106,17 @@ class Offline {
           apiKey: {
             usage: 'Defines the api key value to be used for endpoints marked as private. Defaults to a random hash.',
           },
+          exec: {
+            usage: 'When provided, a shell script is executed when the server starts up, and the server will shut domn after handling this command.',
+          },
         },
       },
     };
 
     this.hooks = {
-      'offline:start:init': this.start,
-      'offline:start': this.start
+      'offline:start:init': this.start.bind(this),
+      'offline:start': this.start.bind(this),
+      'offline:start:end': this.end.bind(this),
     };
   }
 
@@ -123,18 +131,52 @@ class Offline {
 
   // Entry point for the plugin (sls offline)
   start() {
-    const version = this.serverless.version;
-
-    if (!version.startsWith('1.')) {
-      this.serverlessLog(`Offline requires Serverless v1.x.x but found ${version}. Exiting.`);
-      process.exit(0);
-    }
+    this._checkVersion();
 
     // Some users would like to know their environment outside of the handler
     process.env.IS_OFFLINE = true;
 
-    this._buildServer();
-    return this._listen();         // Hapijs listen
+    return Promise.resolve(this._buildServer())
+    .then(() => this._listen())
+    .then(() => this.options.exec ? this._executeShellScript() : this._listenForSigInt())
+    .then(() => this.end());
+  }
+
+  _checkVersion() {
+    const version = this.serverless.version;
+    if (!version.startsWith('1.')) {
+      this.serverlessLog(`Offline requires Serverless v1.x.x but found ${version}. Exiting.`);
+      process.exit(0);
+    }
+  }
+
+  _listenForSigInt() {
+    // Listen for ctrl+c to stop the server
+    return new Promise(resolve => {
+      process.on('SIGINT', () => {
+        this.serverlessLog('Offline Halting...');
+        resolve();
+      });
+    });
+  }
+
+  _executeShellScript() {
+    const command = this.options.exec;
+
+    this.serverlessLog(`Offline executing script [${command}]`);
+
+    return new Promise(resolve => {
+      exec(command, (error, stdout, stderr) => {
+        this.serverlessLog(`exec stdout: [${stdout}]`);
+        this.serverlessLog(`exec stderr: [${stderr}]`);
+        if (error) {
+          // Use the failed command's exit code, proceed as normal so that shutdown can occur gracefully
+          this.serverlessLog(`Offline error executing script [${error}]`);
+          this.exitCode = error.code || 1;
+        }
+        resolve();
+      });
+    });
   }
 
   _buildServer() {
@@ -142,12 +184,13 @@ class Offline {
     this.requests = {};
 
     // Methods
-    this._setEnvironment(); // will set environment variables from serverless.yml file
     this._setOptions();     // Will create meaningful options from cli options
+    this._setEnvironment(); // will set environment variables from serverless.yml file
     this._registerBabel();  // Support for ES6
     this._createServer();   // Hapijs boot
     this._createRoutes();   // API  Gateway emulation
     this._create404Route(); // Not found handling
+
     return this.server;
   }
 
@@ -159,29 +202,40 @@ class Offline {
   }
 
   _setEnvironment() {
-    Object.keys(this.service.provider.environment || {}).forEach(key => {
-      process.env[key] = this.service.provider.environment[key];
+    if (this.options.noEnvironment) return;
+
+    Object.assign(process.env, this.service.provider.environment || {});
+
+    const _this = this;
+
+    Object.keys(this.service.functions).forEach(functionName => {
+      Object.assign(process.env, _this.service.functions[functionName].environment || {});
     });
   }
 
   _setOptions() {
-    // Applies defaults
-    this.options = {
-      host: this.options.host || 'localhost',
-      location: this.options.location || '.',
-      port: this.options.port || 3000,
-      prefix: this.options.prefix || '/',
+    // Merge the different sources of values for this.options
+    // Precedence is: command line options, YAML options, defaults.
+
+    const defaultOpts = {
+      host: 'localhost',
+      location: '.',
+      port: 3000,
+      prefix: '/',
       stage: this.service.provider.stage,
       region: this.service.provider.region,
-      noTimeout: this.options.noTimeout || false,
-      dontPrintOutput: this.options.dontPrintOutput || false,
-      httpsProtocol: this.options.httpsProtocol || '',
-      skipCacheInvalidation: this.options.skipCacheInvalidation || false,
-      corsAllowOrigin: this.options.corsAllowOrigin || '*',
-      corsAllowHeaders: this.options.corsAllowHeaders || 'accept,content-type,x-api-key',
+      noTimeout: false,
+      noEnvironment: false,
+      dontPrintOutput: false,
+      httpsProtocol: '',
+      skipCacheInvalidation: false,
+      corsAllowOrigin: '*',
+      corsAllowHeaders: 'accept,content-type,x-api-key',
       corsAllowCredentials: true,
-      apiKey: this.options.apiKey || crypto.createHash('md5').digest('hex'),
+      apiKey: crypto.createHash('md5').digest('hex'),
     };
+
+    this.options = _.merge({}, defaultOpts, (this.service.custom || {})['serverless-offline'], this.options);
 
     // Prefix must start and end with '/'
     if (!this.options.prefix.startsWith('/')) this.options.prefix = `/${this.options.prefix}`;
@@ -212,7 +266,6 @@ class Offline {
   }
 
   _registerBabel(isBabelRuntime, babelRuntimeOptions) {
-
     const options = isBabelRuntime ?
       babelRuntimeOptions || { presets: ['es2015'] } :
       this.globalBabelOptions;
@@ -229,7 +282,6 @@ class Offline {
   }
 
   _createServer() {
-
     // Hapijs server creation
     this.server = new Hapi.Server({
       connections: {
@@ -265,9 +317,11 @@ class Offline {
     const serviceRuntime = this.service.provider.runtime;
     const apiKeys = this.service.provider.apiKeys;
     const protectedRoutes = [];
-    if (['nodejs', 'nodejs4.3', 'babel'].indexOf(serviceRuntime) === -1) {
+
+    if (['nodejs', 'nodejs4.3', 'nodejs6.10', 'babel'].indexOf(serviceRuntime) === -1) {
       this.printBlankLine();
       this.serverlessLog(`Warning: found unsupported runtime '${serviceRuntime}'`);
+
       return;
     }
 
@@ -317,7 +371,7 @@ class Offline {
 
         // Prefix must start and end with '/' BUT path must not end with '/'
         let fullPath = this.options.prefix + (epath.startsWith('/') ? epath.slice(1) : epath);
-        if (fullPath !== '/' && fullPath.endsWith('/')) fullPath = path.slice(0, -1);
+        if (fullPath !== '/' && fullPath.endsWith('/')) fullPath = fullPath.slice(0, -1);
         fullPath = fullPath.replace(/\+}/g, '*}');
 
         this.serverlessLog(`${method} ${fullPath}`);
@@ -350,6 +404,8 @@ class Offline {
             authorizerOptions.identitySource = 'method.request.header.Authorization';
           }
           else {
+            authorizerOptions.identitySource = endpoint.authorizer.identitySource ||
+              'method.request.header.Authorization'; // See #207
             authorizerOptions = endpoint.authorizer;
           }
 
@@ -370,7 +426,7 @@ class Offline {
             this.options,
             this.serverlessLog,
             servicePath
-          )
+          );
 
           // Set the auth scheme and strategy on the server
           this.server.auth.scheme(authSchemeName, scheme);
@@ -387,14 +443,22 @@ class Offline {
         }
 
         // Route creation
+        const routeMethod = method === 'ANY' ? '*' : method;
+        let routeConfig = {
+          cors,
+          auth: authStrategyName,
+        };
+
+        if(routeMethod !== 'HEAD' && routeMethod !== 'GET'){
+          routeConfig.payload = { parse: false }
+        }
+
         this.server.route({
-          method: method === 'ANY' ? '*' : method,
+          method: routeMethod,
           path: fullPath,
-          config: {
-            cors,
-            auth: authStrategyName,
-          },
+          config: routeConfig,
           handler: (request, reply) => { // Here we go
+            request.payload = request.payload && request.payload.toString();
 
             this.printBlankLine();
             this.serverlessLog(`${method} ${request.path} (λ: ${funName})`);
@@ -411,10 +475,13 @@ class Offline {
                 const requestToken = request.headers['x-api-key'];
                 if (requestToken !== this.options.apiKey) {
                   debugLog(`Method ${method} of function ${funName} token ${requestToken} not valid`);
+
                   return errorResponse(reply);
                 }
-              } else {
+              }
+              else {
                 debugLog(`Missing x-api-key on private function ${funName}`);
+
                 return errorResponse(reply);
               }
             }
@@ -430,12 +497,14 @@ class Offline {
             // default request template to '' if we don't have a definition pushed in from serverless or endpoint
             const requestTemplate = typeof requestTemplates !== 'undefined' && integration === 'lambda' ? requestTemplates[contentType] : '';
 
+            // https://hapijs.com/api#route-configuration doesn't seem to support selectively parsing
+            // so we have to do it ourselves
             const contentTypesThatRequirePayloadParsing = ['application/json', 'application/vnd.api+json'];
-
             if (contentTypesThatRequirePayloadParsing.indexOf(contentType) !== -1) {
               try {
                 request.payload = JSON.parse(request.payload);
-              } catch (err) {
+              }
+              catch (err) {
                 debugLog('error in converting request.payload to JSON:', err);
               }
             }
@@ -451,7 +520,8 @@ class Offline {
 
             try {
               handler = functionHelper.createHandler(funOptions, this.options);
-            } catch (err) {
+            }
+            catch (err) {
               return this._reply500(response, `Error while loading ${funName}`, err, requestId);
             }
 
@@ -466,13 +536,16 @@ class Offline {
                   // Velocity templating language parsing
                   const velocityContext = createVelocityContext(request, this.velocityContextOptions, request.payload || {});
                   event = renderVelocityTemplateObject(requestTemplate, velocityContext);
-                } catch (err) {
+                }
+                catch (err) {
                   return this._reply500(response, `Error while parsing template "${contentType}" for ${funName}`, err, requestId);
                 }
-              } else if (typeof request.payload === 'object') {
+              }
+              else if (typeof request.payload === 'object') {
                 event = request.payload || {};
               }
-            } else if (integration === 'lambda-proxy') {
+            }
+            else if (integration === 'lambda-proxy') {
               event = createLambdaProxyContext(request, this.options, this.velocityContextOptions.stageVariables);
             }
 
@@ -480,7 +553,8 @@ class Offline {
 
             if (this.serverless.service.custom && this.serverless.service.custom.stageVariables) {
               event.stageVariables = this.serverless.service.custom.stageVariables;
-            } else if (integration !== 'lambda-proxy') {
+            }
+            else if (integration !== 'lambda-proxy') {
               event.stageVariables = {};
             }
 
@@ -499,6 +573,7 @@ class Offline {
                 this.printBlankLine();
                 this.serverlessLog(`Warning: context.done called twice within handler '${funName}'!`);
                 debugLog('requestId:', requestId);
+
                 return;
               }
 
@@ -520,7 +595,8 @@ class Offline {
                 const found = errorMessage.match(re);
                 if (found && found.length > 1) {
                   errorStatusCode = found[1];
-                } else {
+                }
+                else {
                   errorStatusCode = '500';
                 }
 
@@ -537,9 +613,7 @@ class Offline {
                 }
 
                 for (const key in endpoint.responses) {
-                  if (key === 'default') continue;
-
-                  if (errorMessage.match(`^${endpoint.responses[key].selectionPattern || key}$`)) {
+                  if (key !== 'default' && errorMessage.match(`^${endpoint.responses[key].selectionPattern || key}$`)) {
                     responseName = key;
                     break;
                   }
@@ -582,21 +656,24 @@ class Offline {
                         debugLog('Found body in right-hand');
                         headerValue = (valueArray[3] ? jsonPath(result, valueArray.slice(3).join('.')) : result).toString();
 
-                      } else {
+                      }
+                      else {
                         this.printBlankLine();
                         this.serverlessLog(`Warning: while processing responseParameter "${key}": "${value}"`);
                         this.serverlessLog(`Offline plugin only supports "integration.response.body[.JSON_path]" right-hand responseParameter. Found "${value}" instead. Skipping.`);
                         this.logPluginIssue();
                         this.printBlankLine();
                       }
-                    } else {
+                    }
+                    else {
                       headerValue = value.match(/^'.*'$/) ? value.slice(1, -1) : value; // See #34
                     }
                     // Applies the header;
                     debugLog(`Will assign "${headerValue}" to header "${headerName}"`);
                     response.header(headerName, headerValue);
 
-                  } else {
+                  }
+                  else {
                     this.printBlankLine();
                     this.serverlessLog(`Warning: while processing responseParameter "${key}": "${value}"`);
                     this.serverlessLog(`Offline plugin only supports "method.response.header.PARAM_NAME" left-hand responseParameter. Found "${key}" instead. Skipping.`);
@@ -689,7 +766,7 @@ class Offline {
             this.requests[requestId].timeout = this.options.noTimeout ? null : setTimeout(
               this._replyTimeout.bind(this, response, funName, funOptions.funTimeout, requestId),
               funOptions.funTimeout
-            )
+            );
 
             // Finally we call the handler
             debugLog('_____ CALLING HANDLER _____');
@@ -723,6 +800,12 @@ class Offline {
         resolve(this.server);
       });
     });
+  }
+
+  end() {
+    this.serverlessLog('Halting offline server');
+    this.server.stop({ timeout: 5000 })
+    .then(() => process.exit(this.exitCode));
   }
 
   // Bad news

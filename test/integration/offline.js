@@ -1,3 +1,5 @@
+/* global describe before context it */
+
 'use strict';
 
 const chai = require('chai');
@@ -21,7 +23,7 @@ describe('Offline', () => {
       offline.inject({
         method: 'GET',
         url: '/magic',
-      }, (res) => {
+      }, res => {
         expect(res.statusCode).to.eq(404);
       });
     });
@@ -31,7 +33,7 @@ describe('Offline', () => {
     let offLine;
     const validToken = 'valid-token';
 
-    before((done) => {
+    before(done => {
       offLine = new OffLineBuilder(new ServerlessBuilder(), { apiKey: validToken }).addFunctionConfig('fn2', {
         handler: 'handler.basicAuthentication',
         events: [{
@@ -53,11 +55,11 @@ describe('Offline', () => {
       done();
     });
 
-    it('should return bad request with no token', (done) => {
+    it('should return bad request with no token', done => {
       offLine.inject({
         method: 'GET',
         url: '/fn2',
-      }, (res) => {
+      }, res => {
         expect(res.statusCode).to.eq(403);
         expect(res.payload).to.eq(JSON.stringify({ message: 'Forbidden' }));
         expect(res.headers).to.have.property('x-amzn-errortype', 'ForbiddenException');
@@ -65,12 +67,12 @@ describe('Offline', () => {
       });
     });
 
-    it('should return forbidden if token is wrong', (done) => {
+    it('should return forbidden if token is wrong', done => {
       offLine.inject({
         method: 'GET',
         url: '/fn2',
         headers: { 'x-api-key': 'random string' },
-      }, (res) => {
+      }, res => {
         expect(res.statusCode).to.eq(403);
         expect(res.payload).to.eq(JSON.stringify({ message: 'Forbidden' }));
         expect(res.headers).to.have.property('x-amzn-errortype', 'ForbiddenException');
@@ -78,13 +80,13 @@ describe('Offline', () => {
       });
     });
 
-    it('should return the function executed correctly', (done) => {
+    it('should return the function executed correctly', done => {
       const handler = {
         method: 'GET',
         url: '/fn2',
         headers: { 'x-api-key': validToken },
       };
-      offLine.inject(handler, (res) => {
+      offLine.inject(handler, res => {
         expect(res.statusCode).to.eq(200);
         expect(res.payload).to.eq(JSON.stringify({ message: 'Private Function Executed Correctly' }));
         done();
@@ -94,7 +96,7 @@ describe('Offline', () => {
   });
 
   context('lambda integration', () => {
-    it('should use event defined response template and headers', (done) => {
+    it('should use event defined response template and headers', done => {
       const offLine = new OffLineBuilder().addFunctionConfig('index', {
         handler: 'users.index',
         events: [{
@@ -112,7 +114,7 @@ describe('Offline', () => {
         }],
       }, (event, context, cb) => cb(null, 'Hello World')).toObject();
 
-      offLine.inject('/index', (res) => {
+      offLine.inject('/index', res => {
         expect(res.headers['content-type']).to.contains('text/html');
         expect(res.statusCode).to.eq('200');
         done();
@@ -120,7 +122,7 @@ describe('Offline', () => {
     });
 
     context('error handling', () => {
-      it('should set the status code to 500 when no [xxx] is present', (done) => {
+      it('should set the status code to 500 when no [xxx] is present', done => {
         const offLine = new OffLineBuilder().addFunctionConfig('index', {
           handler: 'users.index',
           events: [{
@@ -138,14 +140,14 @@ describe('Offline', () => {
           }],
         }, (event, context, cb) => cb(new Error('Internal Server Error'))).toObject();
 
-        offLine.inject('/index', (res) => {
+        offLine.inject('/index', res => {
           expect(res.headers['content-type']).to.contains('text/html');
           expect(res.statusCode).to.eq('500');
           done();
         });
       });
 
-      it('should set the status code to 401 when [401] is the prefix of the error message', (done) => {
+      it('should set the status code to 401 when [401] is the prefix of the error message', done => {
         const offLine = new OffLineBuilder().addFunctionConfig('index', {
           handler: 'users.index',
           events: [{
@@ -163,7 +165,7 @@ describe('Offline', () => {
           }],
         }, (event, context, cb) => cb(new Error('[401] Unauthorized'))).toObject();
 
-        offLine.inject('/index', (res) => {
+        offLine.inject('/index', res => {
           expect(res.headers['content-type']).to.contains('text/html');
           expect(res.statusCode).to.eq('401');
           done();
@@ -173,7 +175,7 @@ describe('Offline', () => {
   });
 
   context('lambda-proxy integration', () => {
-    it('should return application/json content type by default', (done) => {
+    it('should accept and return application/json content type by default', done => {
       const offLine = new OffLineBuilder()
         .addFunctionHTTP('fn1', {
           path: 'fn1',
@@ -186,13 +188,104 @@ describe('Offline', () => {
       offLine.inject({
         method: 'GET',
         url: '/fn1',
-      }, (res) => {
+        payload: { data: 'data' },
+      }, res => {
         expect(res.headers).to.have.property('content-type', 'application/json');
         done();
       });
     });
 
-    it('should return the expected status code', (done) => {
+    it('should accept and return application/json content type', done => {
+      const offLine = new OffLineBuilder()
+        .addFunctionHTTP('fn1', {
+          path: 'fn1',
+          method: 'GET',
+        }, (event, context, cb) => cb(null, {
+          statusCode: 200,
+          body: JSON.stringify({ data: 'data' }),
+          headers: {
+            'content-type': 'application/json',
+          },
+        })).toObject();
+
+      offLine.inject({
+        method: 'GET',
+        url: '/fn1',
+        headers: {
+          'content-type': 'application/json',
+        },
+        payload: { data: 'data' },
+      }, res => {
+        expect(res.headers).to.have.property('content-type', 'application/json; charset=utf-8');
+        done();
+      });
+    });
+
+    it('should accept and return custom content type', done => {
+      const offLine = new OffLineBuilder()
+        .addFunctionHTTP('fn1', {
+          path: 'fn1',
+          method: 'GET',
+        }, (event, context, cb) => cb(null, {
+          statusCode: 200,
+          body: JSON.stringify({ data: 'data' }),
+          headers: {
+            'content-type': 'application/vnd.api+json',
+          },
+        })).toObject();
+
+      offLine.inject({
+        method: 'GET',
+        url: '/fn1',
+        headers: {
+          'content-type': 'application/vnd.api+json',
+        },
+        payload: { data: 'data' },
+      }, res => {
+        // console.log(res);
+        expect(res.headers).to.have.property('content-type', 'application/vnd.api+json');
+        done();
+      });
+    });
+
+    it('should return application/json content type by default', done => {
+      const offLine = new OffLineBuilder()
+        .addFunctionHTTP('fn1', {
+          path: 'fn1',
+          method: 'GET',
+        }, (event, context, cb) => cb(null, {
+          statusCode: 200,
+          body: JSON.stringify({ data: 'data' }),
+        })).toObject();
+
+      offLine.inject({
+        method: 'GET',
+        url: '/fn1',
+      }, res => {
+        expect(res.headers).to.have.property('content-type', 'application/json');
+        done();
+      });
+    });
+
+    it('should work with trailing slashes path', done => {
+      const offLine = new OffLineBuilder().addFunctionHTTP('hello', {
+        path: 'fn3/',
+        method: 'GET',
+      }, (event, context, cb) => cb(null, {
+        statusCode: 201,
+        body: null,
+      })).toObject();
+
+      offLine.inject({
+        method: 'GET',
+        url: '/fn3',
+      }, res => {
+        expect(res.statusCode).to.eq(201);
+        done();
+      });
+    });
+
+    it('should return the expected status code', done => {
       const offLine = new OffLineBuilder().addFunctionHTTP('hello', {
         path: 'fn1',
         method: 'GET',
@@ -204,14 +297,14 @@ describe('Offline', () => {
       offLine.inject({
         method: 'GET',
         url: '/fn1',
-      }, (res) => {
+      }, res => {
         expect(res.statusCode).to.eq(201);
         done();
       });
     });
 
     context('with the stageVariables plugin', () => {
-      it('should handle custom stage variables declaration', (done) => {
+      it('should handle custom stage variables declaration', done => {
         const offLine = new OffLineBuilder().addCustom('stageVariables', { hello: 'Hello World' }).addFunctionHTTP('hello', {
           path: 'fn1',
           method: 'GET',
@@ -223,7 +316,7 @@ describe('Offline', () => {
         offLine.inject({
           method: 'GET',
           url: '/fn1',
-        }, (res) => {
+        }, res => {
           expect(res.payload).to.eq('Hello World');
           done();
         });
@@ -232,7 +325,7 @@ describe('Offline', () => {
   });
 
   context('with catch-all route', () => {
-    it('should match arbitary route', (done) => {
+    it('should match arbitary route', done => {
       const offLine = new OffLineBuilder().addFunctionHTTP('test', {
         path: 'test/{stuff+}',
         method: 'GET',
@@ -240,7 +333,7 @@ describe('Offline', () => {
         statusCode: 200, body: 'Hello',
       })).toObject();
 
-      offLine.inject('/test/some/matching/route', (res) => {
+      offLine.inject('/test/some/matching/route', res => {
         expect(res.statusCode).to.eq(200);
         expect(res.payload).to.eq('Hello');
         done();
