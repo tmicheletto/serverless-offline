@@ -194,6 +194,13 @@ class Offline {
     return this.server;
   }
 
+  // Allows customised 'require' of a given lambda handler
+  // for the purposes of mocking dependencies with e.g proxiquire
+  // Takes options: { handlerPath: 'foo', handlerName: 'baz', doRequire: () => require('foo') }
+  overrideRequire(options) {
+    functionHelper.overrideRequire(options);
+  }
+
   _setEnvironment() {
     if (this.options.noEnvironment) return;
 
@@ -336,7 +343,7 @@ class Offline {
       this.serverlessLog(`Routes for ${funName}:`);
 
       // Adds a route for each http endpoint
-      fun.events.forEach(event => {
+      fun.events && fun.events.forEach(event => {
 
         if (!event.http) return;
         if (_.eq(event.http.private, true)) {
